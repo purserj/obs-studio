@@ -37,6 +37,7 @@ struct ft2_source {
 
 	bool file_load_failed;
 	bool from_file;
+	bool antialiasing;
 	char *text_file;
 	wchar_t *text;
 	time_t m_timestamp;
@@ -69,7 +70,8 @@ struct ft2_source {
 
 extern FT_Library ft2_lib;
 
-static void *ft2_source_create(obs_data_t *settings, obs_source_t *source);
+static void *ft2_source_create_v1(obs_data_t *settings, obs_source_t *source);
+static void *ft2_source_create_v2(obs_data_t *settings, obs_source_t *source);
 static void ft2_source_destroy(void *data);
 static void ft2_source_update(void *data, obs_data_t *settings);
 static void ft2_source_render(void *data, gs_effect_t *effect);

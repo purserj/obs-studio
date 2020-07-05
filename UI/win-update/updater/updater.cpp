@@ -1071,6 +1071,8 @@ static bool UpdateVS2017Redists(json_t *root)
 	return success;
 }
 
+extern "C" void UpdateHookFiles(void);
+
 static bool Update(wchar_t *cmdLine)
 {
 	/* ------------------------------------- *
@@ -1151,17 +1153,31 @@ static bool Update(wchar_t *cmdLine)
 		GetCurrentDirectory(_countof(lpAppDataPath), lpAppDataPath);
 		StringCbCat(lpAppDataPath, sizeof(lpAppDataPath), L"\\config");
 	} else {
-		CoTaskMemPtr<wchar_t> pOut;
-		HRESULT hr = SHGetKnownFolderPath(FOLDERID_RoamingAppData,
-						  KF_FLAG_DEFAULT, nullptr,
-						  &pOut);
-		if (hr != S_OK) {
+		DWORD ret;
+		ret = GetEnvironmentVariable(L"OBS_USER_APPDATA_PATH",
+					     lpAppDataPath,
+					     _countof(lpAppDataPath));
+
+		if (ret >= _countof(lpAppDataPath)) {
 			Status(L"Update failed: Could not determine AppData "
 			       L"location");
 			return false;
 		}
 
-		StringCbCopy(lpAppDataPath, sizeof(lpAppDataPath), pOut);
+		if (!ret) {
+			CoTaskMemPtr<wchar_t> pOut;
+			HRESULT hr = SHGetKnownFolderPath(
+				FOLDERID_RoamingAppData, KF_FLAG_DEFAULT,
+				nullptr, &pOut);
+			if (hr != S_OK) {
+				Status(L"Update failed: Could not determine AppData "
+				       L"location");
+				return false;
+			}
+
+			StringCbCopy(lpAppDataPath, sizeof(lpAppDataPath),
+				     pOut);
+		}
 	}
 
 	StringCbCat(lpAppDataPath, sizeof(lpAppDataPath), L"\\obs-studio");
@@ -1408,6 +1424,14 @@ static bool Update(wchar_t *cmdLine)
 		}
 	}
 
+	/* ------------------------------------- *
+	 * Update hook files and vulkan registry */
+
+	UpdateHookFiles();
+
+	/* ------------------------------------- *
+	 * Finish                                */
+
 	/* If we get here, all updates installed successfully so we can purge
 	 * the old versions */
 	for (update_t &update : updates) {
@@ -1553,15 +1577,12 @@ static INT_PTR CALLBACK UpdateDialogProc(HWND hwnd, UINT message, WPARAM wParam,
 	return false;
 }
 
-static void RestartAsAdmin(LPWSTR lpCmdLine)
+static int RestartAsAdmin(LPCWSTR lpCmdLine, LPCWSTR cwd)
 {
 	wchar_t myPath[MAX_PATH];
 	if (!GetModuleFileNameW(nullptr, myPath, _countof(myPath) - 1)) {
-		return;
+		return 0;
 	}
-
-	wchar_t cwd[MAX_PATH];
-	GetCurrentDirectoryW(_countof(cwd) - 1, cwd);
 
 	SHELLEXECUTEINFO shExInfo = {0};
 	shExInfo.cbSize = sizeof(shExInfo);
@@ -1578,16 +1599,27 @@ static void RestartAsAdmin(LPWSTR lpCmdLine)
 	 * windows :( */
 	AllowSetForegroundWindow(ASFW_ANY);
 
+	/* if the admin is a different user, save the path to the user's
+	 * appdata so we can load the correct manifest */
+	CoTaskMemPtr<wchar_t> pOut;
+	HRESULT hr = SHGetKnownFolderPath(FOLDERID_RoamingAppData,
+					  KF_FLAG_DEFAULT, nullptr, &pOut);
+	if (hr == S_OK)
+		SetEnvironmentVariable(L"OBS_USER_APPDATA_PATH", pOut);
+
 	if (ShellExecuteEx(&shExInfo)) {
 		DWORD exitCode;
 
+		WaitForSingleObject(shExInfo.hProcess, INFINITE);
+
 		if (GetExitCodeProcess(shExInfo.hProcess, &exitCode)) {
 			if (exitCode == 1) {
-				LaunchOBS();
+				return exitCode;
 			}
 		}
 		CloseHandle(shExInfo.hProcess);
 	}
+	return 0;
 }
 
 static bool HasElevation()
@@ -1612,11 +1644,36 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int)
 {
 	INITCOMMONCONTROLSEX icce;
 
+	wchar_t cwd[MAX_PATH];
+	wchar_t newPath[MAX_PATH];
+	GetCurrentDirectoryW(_countof(cwd) - 1, cwd);
+
+	is32bit = wcsstr(cwd, L"bin\\32bit") != nullptr;
+
 	if (!HasElevation()) {
+
+		WinHandle hMutex = OpenMutex(
+			SYNCHRONIZE, false, L"OBSUpdaterRunningAsNonAdminUser");
+		if (hMutex) {
+			MessageBox(
+				nullptr, L"Updater Error",
+				L"OBS Studio Updater must be run as an administrator.",
+				MB_ICONWARNING);
+			return 2;
+		}
+
 		HANDLE hLowMutex = CreateMutexW(
 			nullptr, true, L"OBSUpdaterRunningAsNonAdminUser");
 
-		RestartAsAdmin(lpCmdLine);
+		/* return code 1 =  user wanted to launch OBS */
+		if (RestartAsAdmin(lpCmdLine, cwd) == 1) {
+			StringCbCat(cwd, sizeof(cwd), L"\\..\\..");
+			GetFullPathName(cwd, _countof(newPath), newPath,
+					nullptr);
+			SetCurrentDirectory(newPath);
+
+			LaunchOBS();
+		}
 
 		if (hLowMutex) {
 			ReleaseMutex(hLowMutex);
@@ -1625,18 +1682,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int)
 
 		return 0;
 	} else {
-		{
-			wchar_t cwd[MAX_PATH];
-			wchar_t newPath[MAX_PATH];
-			GetCurrentDirectoryW(_countof(cwd) - 1, cwd);
-
-			is32bit = wcsstr(cwd, L"bin\\32bit") != nullptr;
-			StringCbCat(cwd, sizeof(cwd), L"\\..\\..");
-
-			GetFullPathName(cwd, _countof(newPath), newPath,
-					nullptr);
-			SetCurrentDirectory(newPath);
-		}
+		StringCbCat(cwd, sizeof(cwd), L"\\..\\..");
+		GetFullPathName(cwd, _countof(newPath), newPath, nullptr);
+		SetCurrentDirectory(newPath);
 
 		hinstMain = hInstance;
 

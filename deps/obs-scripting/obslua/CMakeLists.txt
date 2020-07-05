@@ -2,7 +2,12 @@ cmake_minimum_required(VERSION 2.8)
 project(obslua)
 
 if(POLICY CMP0078)
+	# UseSWIG generates standard target names.
 	cmake_policy(SET CMP0078 OLD)
+endif()
+if(POLICY CMP0086)
+	# UseSWIG honors SWIG_MODULE_NAME via -module flag.
+	cmake_policy(SET CMP0086 OLD)
 endif()
 
 find_package(SWIG 2 REQUIRED)
@@ -29,6 +34,8 @@ else()
 	SWIG_ADD_MODULE(obslua lua obslua.i ../cstrcache.cpp ../cstrcache.h)
 endif()
 SWIG_LINK_LIBRARIES(obslua obs-scripting libobs ${LUA_LIBRARIES} ${EXTRA_LIBS})
+
+set_target_properties(obslua PROPERTIES FOLDER "scripting")
 
 function(install_plugin_bin_swig target additional_target)
 	if(APPLE)
